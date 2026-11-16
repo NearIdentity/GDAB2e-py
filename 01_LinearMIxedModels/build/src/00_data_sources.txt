@@ -1,0 +1,55 @@
+%%md
+# 0. Data Sources and Setup (Appendix A)
+
+This notebook identifies every data set the chapter uses, shows where to obtain it, and verifies the local copies. It is the companion's **Appendix A**.
+
+| Data set | Used in | Status | Where to get it |
+|---|---|---|---|
+| `MaizeRILs.csv` — 62 B73 × Mo17 RILs, 4 locations × 2 reps, balanced (496 plots; missing plots filled with simulated values) | Sections 1–2 | **Openly available** | Authors: the book's sample-data folder on Google Drive, linked from F. Isik's book page (*faculty.cnr.ncsu.edu/fikretisik/about/breedingbook*). Verified public mirror used here: `github.com/malachycampbell/StatisticalMethodsforOmicsAssistedBreeding` → `OLS.MM/MaizeRILs.csv` |
+| `MaizeRIL_miss.csv` — the real, unbalanced data (474 plots, ≈4.5% missing) | Section 3 | **Openly available** | Authors' Google Drive folder (as above). Verified public mirror: `github.com/Robbins-Lab/PLSCI-7201` → `Modules/Module8/ProblemSets/MaizeRILs2.csv` (height only) |
+| Daughters' lactation yield (9 records) | Section 4 | **Printed in the chapter** (from Robinson 1991) | Typed into notebook 04 and the unit tests |
+| Matrix examples | Section 5 | **Printed in the chapter** | Typed into notebook 05 |
+
+**Verification.** A copy is accepted only if it reproduces the chapter's printed results: the corrected total sum of squares (280 294.7316 balanced; 266 774.8025 unbalanced), every Type I and Type III sum of squares, and the REML estimates. Both mirrors pass, and their SHA-256 digests are pinned in `lmmtools/data.py`, so a changed file is detected.
+
+**Licensing.** The data belong to the book's authors. This companion does not redistribute them; `scripts/get_data.py` downloads them for personal study. For any other use, obtain them from the authors' folder.
+
+### To request from the original authors
+
+1. **Confirmation that the two mirrored files are identical to the files in the authors' Google Drive folder** (this session could not reach Google Drive; the mirrors were validated against every printed statistic instead).
+2. **`fs`**, the data frame used in the ASReml-R ML snippet on p. 18–19 (`asreml(fixed = y ~ 1, ..., method = "ml", data = fs)`); it is not described in the chapter. Its random terms are also left blank (`random = ,`).
+3. **The variables `x1` and `x2`** in the lme4 ML example (p. 19); they are not in `MaizeRILs.csv`, so the example cannot be run as printed.
+4. **The code files the chapter cites** — `example2a.r`, `Example2B.sas`, `Code02-1_ANOVA with SAS GLM procedure.sas` — to confirm the analyses reproduced here (they are in the authors' chapter-code folders).
+5. **The ASReml-R fits `NoRIL`, `NoGxE`, `Full`** used with `lrt.asreml()` (p. 20): the code for those models is not shown, and the printed `NoGxE/NoRIL` statistic (534) cannot be matched to a model in the text.
+
+%%imports
+# Modules and imports for this section
+import pandas as pd
+from lmmtools.data import FILES, data_dir, fetch, load_maize, sha256   # CUSTOM: download + verify (Appendix C)
+from lmmtools.report import check
+
+%%code
+paths = fetch()                         # downloads only if missing; always verifies SHA-256
+for name, meta in FILES.items():
+    print(f"{name:20s} {sha256(paths[name])}  rows expected {meta['rows']}")
+
+%%code
+bal, miss = load_maize(True), load_maize(False)
+check("balanced: plots", len(bal), 496, 0)
+check("unbalanced: plots", len(miss), 474, 0)
+check("balanced: corrected total SS", ((bal.height - bal.height.mean())**2).sum(), 280294.7316, 5e-4)
+check("unbalanced: corrected total SS", ((miss.height - miss.height.mean())**2).sum(), 266774.8025, 5e-4)
+check("unbalanced: missing fraction (%)", 100 * (1 - len(miss) / 496), 4.4, 0.1)
+print(bal.describe(include="all").T[["count", "unique", "mean", "min", "max"]])
+
+%%md
+### Setup recap
+
+```bash
+uv venv --python 3.12
+uv pip install -r requirements.txt          # includes `-e .` for the custom lmmtools package
+uv run python scripts/get_data.py           # data into ./data, SHA-256 verified
+uv run pytest                               # unit tests (Appendix C.4)
+uv run jupyter lab                          # notebooks/
+```
+Full per-platform instructions (Linux, macOS, Windows) are in `README.md`.

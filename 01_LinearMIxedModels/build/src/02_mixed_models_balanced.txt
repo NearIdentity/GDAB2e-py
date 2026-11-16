@@ -1,0 +1,207 @@
+%%md
+# 2. Mixed-Model Analysis of the Balanced Data; Hypothesis Tests; BLUE and BLUP
+
+*Companion to Chapter 1, pages 12–23.*
+
+The mixed model puts only fixed effects (here just $\mu$) in the mean and declares the other terms random, estimating their variances directly by restricted maximum likelihood (REML). This notebook mirrors the SAS PROC MIXED, lme4 and ASReml analyses with three Python engines:
+
+* **statsmodels** `MixedLM` — the primary tool; crossed random effects are expressed as variance components inside one all-encompassing group;
+* **lmmtools** `SparseREML` (custom, Appendix C.1) — for SAS-style standard errors (COVTEST), likelihood-ratio tests and profile confidence intervals, which `MixedLM` does not report for variance components;
+* **pyreml** — shown in Appendix B as the alternative for larger or structured models.
+
+%%imports
+# Modules and imports for this section
+import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf                # MixedLM via mixedlm()
+from scipy import stats                              # chi-square for LRTs
+from lmmtools.data import load_maize                 # CUSTOM: data loader (Appendix A)
+from lmmtools.design import incidence                # CUSTOM: sparse incidence (Z) matrices
+from lmmtools.reml import SparseREML, boundary_lrt   # CUSTOM: sparse REML, SEs, LRT, profile CIs (Appendix C.1)
+from lmmtools.report import check
+import warnings; warnings.filterwarnings("ignore")
+pd.set_option("display.width", 100)
+maize = load_maize(balanced=True)
+
+%%md
+## Balanced data: mixed-model analysis with SAS PROC MIXED
+
+%%orig SAS
+proc mixed data=ril.maizeril covtest;
+class location rep RIL;
+model height = /solution;
+random location rep(location) RIL RIL*location/solution;
+ods output solutionR = random solutionF = fixed;
+
+%%md
+In `statsmodels`, `groups` must be a single column covering all observations (`one`), and each crossed random term becomes a variance-component formula. The default optimiser stops slightly short of the optimum on this flat likelihood (location has only four levels); BFGS with a tight gradient tolerance reaches the SAS solution {{N4}}.
+
+%%code
+d = maize.assign(one=1)
+vc = {"location": "0 + C(location)", "rep(location)": "0 + C(location):C(rep)",
+      "RIL": "0 + C(RIL)", "location*RIL": "0 + C(RIL):C(location)"}
+mm = smf.mixedlm("height ~ 1", d, groups="one", vc_formula=vc).fit(reml=True, method=["bfgs"], gtol=1e-10, maxiter=5000)
+sm_vc = pd.Series(dict(zip(mm.model.exog_vc.names, mm.vcomp)) | {"Residual": mm.scale})
+print(sm_vc.round(4))
+print(f"-2 Res Log Likelihood {-2 * mm.llf:.1f}   intercept {mm.fe_params.iloc[0]:.2f} (SE {mm.bse_fe.iloc[0]:.4f})")
+
+%%code
+for comp, val in [("location", 220.66), ("rep(location)", 13.4463), ("RIL", 303.15), ("location*RIL", 24.9323), ("Residual", 64.8862)]:
+    check(f"statsmodels sigma2 {comp}", sm_vc[comp], val, 0.006 if comp in ("location", "RIL") else 5e-4)
+check("-2 Res Log Likelihood", -2 * mm.llf, 3833.2, 0.05)
+
+%%md
+`MixedLM`'s summary lists "Var" rows with a standard error, but these are not the asymptotic SEs of the variance components that `covtest` prints. The custom `SparseREML` computes the exact observed-information SEs (as PROC MIXED) and the SAS fit statistics:
+
+%%code
+Zs = [incidence(maize, f)[0] for f in ["location", ["location", "rep"], "RIL", ["location", "RIL"]]]
+names = ["location", "rep(location)", "RIL", "location*RIL"]
+model = SparseREML(maize.height, np.ones((len(maize), 1)), Zs, names)
+fit = model.fit()                        # REML; se="observed" (SAS COVTEST)
+print(fit.table().round(4))
+print(f"-2 Res Log Likelihood {fit.neg2_loglik:.1f}   AIC {fit.aic:.1f}")
+print(f"Solution for fixed effects: Intercept {fit.beta[0]:.2f}, SE {fit.beta_se[0]:.4f}, DF 3, t {fit.beta[0] / fit.beta_se[0]:.2f}")
+
+%%code
+sas = pd.DataFrame({"Estimate": [220.66, 13.4463, 303.15, 24.9323, 64.8862],
+                    "Std Error": [186.48, 10.2484, 57.5088, 6.6787, 5.8745]}, index=fit.table().index)
+for comp in sas.index:
+    check(f"sigma2 {comp}", fit.table().loc[comp, "Estimate"], sas.loc[comp, "Estimate"], 2e-4 * sas.loc[comp, "Estimate"])
+    check(f"SE {comp}", fit.table().loc[comp, "Std Error"], sas.loc[comp, "Std Error"], 2e-4 * sas.loc[comp, "Std Error"])
+check("AIC (SAS)", fit.aic, 3843.2, 0.05)
+check("Intercept SE", fit.beta_se[0], 7.8719, 5e-5)
+
+%%md
+PROC MIXED gives no sums of squares, mean squares or F-tests for random terms, only variance-component estimates. With balanced data and all estimates positive, REML equals the method-of-moments estimates of notebook 01 (303.15, 24.93, 64.89). REML also keeps estimates non-negative, which the method of moments does not guarantee.
+
+## Balanced data: mixed-model analysis with R (lme4)
+
+%%orig R
+mm <- lmer(height ~ 1 + (1 | RIL) + (1 | location / rep) + (1 | location:RIL), data = maize)
+summary(mm)
+confint(mm)
+
+%%md
+lme4's estimates are the same; its AIC differs because it also counts the fixed intercept {{N2}}. Its "Std.Dev." column is $\sqrt{\hat\sigma^2}$, not a standard error. For uncertainty, `confint()` profiles the likelihood: for RIL the SD interval is (14.574, 21.155), i.e. (212.4, 447.5) on the variance scale, against the symmetric Wald interval 303.15 ± 2(57.51) = (188.1, 418.2). The profile interval is asymmetric, as the sampling distribution of a variance is.
+
+`SparseREML.profile_ci()` computes profile intervals. lme4 profiles the ML deviance even for a REML fit, so an ML fit reproduces its numbers; a REML profile is also shown {{N1}}:
+
+%%code
+ml_fit = model.fit(method="ml", se=None)
+rows = []
+for i, nm in enumerate(names + ["Residual"]):
+    lo_ml, hi_ml = model.profile_ci(ml_fit, i)            # lme4-compatible
+    lo_r, hi_r = model.profile_ci(fit, i)                 # REML profile
+    rows.append((nm, lo_ml, hi_ml, lo_r, hi_r))
+ci = pd.DataFrame(rows, columns=["term", "2.5% (lme4/ML)", "97.5% (lme4/ML)", "2.5% (REML)", "97.5% (REML)"]).set_index("term")
+print("Profile 95% CIs on the SD scale\n", ci.round(3))
+
+%%code
+lme4 = {"location*RIL": (3.571, 6.281), "RIL": (14.574, 21.155), "rep(location)": (1.909, 9.280), "location": (6.929, 32.399), "Residual": (7.390, 8.826)}
+for nm, (lo, hi) in lme4.items():
+    check(f"lme4 upper limit {nm}", ci.loc[nm, "97.5% (lme4/ML)"], hi, 0.02)
+    check(f"lme4 lower limit {nm}", ci.loc[nm, "2.5% (lme4/ML)"], lo, 0.05)     # lme4 interpolates its profile with splines
+print("RIL variance interval:", np.round(np.square(ci.loc["RIL", ["2.5% (lme4/ML)", "97.5% (lme4/ML)"]].to_numpy(float)), 1))
+
+%%md
+### Likelihood-ratio test for the location variance
+
+Drop location, refit, and compare $-2\log L_R$. The draft's lme4 code writes the reduced model's block term as `(1|rep/location)`, which nests location within rep and fits a different structure; the intended term is {{C3|`(1|location:rep)`, which matches SAS's `random rep(location)`}}.
+
+%%orig R
+mmR <- lmer(height ~ 1 + (1|RIL) + (1|rep/location) + (1|location:RIL), data = maize)
+(LR <- mmR@devcomp$cmp["REML"] - mm@devcomp$cmp["REML"])
+(p <- (1 / 2) * (1 - pchisq(LR, 1)))
+
+%%code
+dR = d.copy()
+vcR = {"rep(location)": "0 + C(location):C(rep)", "RIL": "0 + C(RIL)", "location*RIL": "0 + C(RIL):C(location)"}
+mmR = smf.mixedlm("height ~ 1", dR, groups="one", vc_formula=vcR).fit(reml=True, method=["bfgs"], gtol=1e-10, maxiter=5000)
+D, p_raw, p_adj = boundary_lrt(-2 * mmR.llf, -2 * mm.llf)
+print(f"-2RLL full {-2 * mm.llf:.2f}   reduced {-2 * mmR.llf:.2f}   LRT {D:.3f}   raw p {p_raw:.4f}   adjusted p {p_adj:.6f}")
+check("-2RLL reduced (no location)", -2 * mmR.llf, 3841.3, 0.05)
+check("LRT statistic", D, 8.145, 1e-3)
+check("adjusted p-value", p_adj, 0.002159, 5e-6)
+
+%%md
+The p-value is halved because the null hypothesis $\sigma^2_L = 0$ lies on the boundary of the parameter space (Self & Liang 1987). The adjusted p = 0.002 agrees with the synthesised ANOVA F-test for location (0.0022), whereas the Z-test (Z = 1.18, p = 0.12) misses it: the Z-test has low power for components estimated from few levels.
+
+## Hypothesis testing with mixed models
+
+The LRT statistic is $D = 2[\log L_1 - \log L_2]$, with $L_1$ the full and $L_2$ the reduced model's REML likelihood, compared with $\chi^2$ on the difference in the number of variance parameters (eq. 1.4). Information criteria (eqs. 1.5–1.6) are $\text{AIC} = -2\log L + 2t$ and $\text{BIC} = -2\log L + t\log\nu$. Two rules follow from REML's adjustment for the fixed effects:
+
+| Fixed effects | Random effects | Estimation | AIC/BIC comparison |
+|---|---|---|---|
+| Same | Different | REML | Valid |
+| Different | Same or different | REML | Not valid |
+| Different | Same or different | ML | Valid |
+
+The table of LRTs for the other components:
+
+%%code
+full = fit.neg2_loglik
+rows = []
+for drop, label in [(0, "No location"), (2, "No RIL"), (3, "No location*RIL")]:
+    red = SparseREML(maize.height, np.ones((len(maize), 1)), [Z for i, Z in enumerate(Zs) if i != drop]).fit(se=None)
+    D, p_raw, p_adj = boundary_lrt(red.neg2_loglik, full)
+    rows.append((label, red.neg2_loglik, D, p_raw, p_adj))
+lrt = pd.DataFrame(rows, columns=["Model", "-2 RLL", "LRT", "raw p", "adjusted p"]).set_index("Model")
+print(f"Full model -2RLL = {full:.1f}"); print(lrt.round(4))
+check("-2RLL no RIL", lrt.loc["No RIL", "-2 RLL"], 4092.7, 0.05)
+check("LRT no RIL", lrt.loc["No RIL", "LRT"], 259.5, 0.05)
+check("-2RLL no location*RIL", lrt.loc["No location*RIL", "-2 RLL"], 3850.4, 0.05)
+check("LRT no location*RIL", lrt.loc["No location*RIL", "LRT"], 17.20, 0.05)
+
+%%md
+To compare models that differ in their **fixed** effects, refit by ML (`reml=False` in statsmodels, `method="ml"` in ASReml-R, `REML = FALSE` in lme4). The draft's lme4 snippet has {{C4|`data = maize`}} in place of `maize = df`. A Python sketch with two hypothetical covariates `x1`, `x2` (not in this data set):
+
+```python
+m1 = smf.mixedlm("y ~ x1", df, groups="RIL").fit(reml=False)
+m2 = smf.mixedlm("y ~ x1 + x2", df, groups="RIL").fit(reml=False)
+print(m1.aic, m2.aic, m1.bic, m2.bic)      # smaller is better
+```
+
+For the maize model, the ML fit and its information criteria:
+
+%%code
+print(f"ML: -2logL {ml_fit.neg2_loglik:.2f}  AIC {ml_fit.aic:.2f}  BIC {ml_fit.bic():.2f}")
+print(f"REML: -2logL {fit.neg2_loglik:.2f}  AIC {fit.aic:.2f}  BIC (nu = n - p) {fit.bic():.2f}")
+print("ML variance estimates:", dict(zip(names + ['Residual'], np.round(ml_fit.theta, 2))))
+
+%%md
+## Prediction: BLUE and BLUP
+
+LS-means of fixed effects are **best linear unbiased estimators (BLUEs)**: linear combinations of fixed-effect estimates, unbiased, with minimum variance. Random effects are *predicted* by **best linear unbiased predictors (BLUPs)**. In the mixed model a random factor's effects average to zero, so they drop out of fixed-effect LS-means, and an LS-mean of a random factor does not exist (PROC MIXED errors on `lsmeans RIL` when RIL is random). A marginal BLUP for a line is $\hat\mu + \hat u_k$. Animal breeders usually rank the $\hat u_k$ directly; crop breeders often use marginal predictions. A *conditional* BLUP, predicted for the set of tested environments, has a smaller standard error (Chapter 7).
+
+%%orig R
+BLUP <- fixef(mm) + ranef(mm)$RIL
+head(BLUP)
+
+%%code
+re = mm.random_effects[1]                               # one group, labelled by the value of `one`
+u_sm = re[[i for i in re.index if i.startswith("RIL[C(RIL)")]]
+u_sm.index = [i[len("RIL[C(RIL)["):-2] for i in u_sm.index]    # 'RIL[C(RIL)[RIL-1]]' -> 'RIL-1'
+blup = pd.DataFrame({"Random effect predictor": u_sm, "mu": mm.fe_params.iloc[0]})
+blup["BLUP"] = blup["mu"] + blup["Random effect predictor"]
+lsmean = maize.groupby("RIL").height.mean()            # balanced: LS-mean = arithmetic mean of the line
+blup["LSMEAN"] = lsmean
+blup["Fixed effect estimate"] = lsmean - maize.height.mean()
+s2 = sm_vc
+h2 = s2["RIL"] / (s2["RIL"] + s2["location*RIL"] / 4 + s2["Residual"] / 8)
+blup["Fixed effect*h2"] = blup["Fixed effect estimate"] * h2
+show = ["RIL-1", "RIL-11", "RIL-12", "RIL-14", "RIL-15", "RIL-16", "RIL-20", "RIL-21"]
+short_names = {"Random effect predictor": "u_hat", "Fixed effect estimate": "LSMEAN-mean", "Fixed effect*h2": "h2*(LSMEAN-mean)"}
+print(blup.loc[show].rename(columns=short_names).round(2)); print(f"heritability of entry means h2 = {h2:.4f}")
+
+%%code
+for k, v in {"RIL-1": 182.10, "RIL-14": 193.70, "RIL-20": 208.50, "RIL-21": 166.59}.items():
+    check(f"marginal BLUP {k}", blup.loc[k, "BLUP"], v, 6e-3)
+check("BLUP = h2 x (LSmean - mean), max deviation", (blup["Random effect predictor"] - blup["Fixed effect*h2"]).abs().max(), 0, 1e-4)
+check("heritability of entry means", h2, 0.9548, 5e-5)
+
+%%md
+BLUPs are shrunk toward $\hat\mu = 182.12$ relative to the LS-means. RIL-20's LS-mean is 209.75 and its BLUP 208.50; RIL-21's LS-mean is 165.85 and its {{C5|BLUP 166.59}}. The amount of shrinkage depends on the heritability of entry means,
+
+$$h^2 = \frac{\hat\sigma^2_G}{\hat\sigma^2_G + \hat\sigma^2_{GL}/n_l + \hat\sigma^2_\varepsilon/(n_l n_b)} = \frac{303.15}{303.15 + 24.93/4 + 64.89/8},$$
+
+which equals {{C23|0.955}}. With balanced data each BLUP is exactly $h^2$ times the line's deviation from the grand mean (checked above).

@@ -1,0 +1,122 @@
+%%md
+# Appendix B. Choosing a Python Mixed-Model Engine: Alternative Code
+
+The main notebooks use **statsmodels** for fitting and the custom **lmmtools** for what statsmodels lacks. Other libraries suit other use cases. This appendix fits the same maize model with each, so the code can be swapped, and summarises when each is the better choice. Timings for growing data sets are in Appendix C.5.
+
+| Use case | Recommended | Why |
+|---|---|---|
+| Small–moderate data (≲ 3 000 records), a few crossed or nested random factors, standard REML/ML | **statsmodels** `MixedLM` | Mature, formula interface, no extra dependencies. Dense algebra: time and memory grow quickly with the number of random-effect levels. Default optimiser may stop early — use `method=["bfgs"]`, tight `gtol`. |
+| SAS/ASReml-style output: variance-component SEs (COVTEST), LRTs on the boundary, profile CIs, Type III EMS and synthesised F-tests, LS-means with estimability | **lmmtools** (custom, Appendix C) | Not available elsewhere in Python; validated against every number in the chapter. |
+| Larger data (10⁴ records and up), many levels, iid random factors | **lmmtools** `SparseREML` | Works on the sparse mixed model equations and never forms the n × n matrix V: 9 500 records in 27 s and 38 000 in 5.5 min on 2 CPU cores (Appendix C.5). For 10⁵+ records, a dedicated tool (ASReml, or a sparse Cholesky with AI-REML) is advisable. |
+| Pedigree (A) or genomic (G) relationship matrices, structured covariances (AR1, Euclidean, factor-analytic, Kronecker G ⊗ Σ), multi-trait, heterogeneous residuals, GPU | **pyreml** | Built for these (Kronecker parameterisation, `A_pedigree`, `A_genomic`); PyTorch on CPU or CUDA. GPL-3.0; installs PyTorch (large). Slower than sparse methods for many iid levels on CPU. |
+| Exact lme4 / lmerTest behaviour, Satterthwaite or Kenward–Roger denominator df | **pymer4** (calls R) | Requires an R installation with lme4 and lmerTest. |
+| Full Bayesian analysis, posterior intervals for variance components | **Bambi** on **PyMC** | Formula interface like lme4; MCMC cost. |
+| Predictions for a single random factor with known variance ratio, at scale | **scikit-learn** `Ridge` | BLUP with one random factor is ridge regression with α = σ²ₑ/σ²ᵤ (B.5). No variance estimation. |
+
+%%imports
+# Modules and imports for this appendix
+import time
+import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf                # B.1 statsmodels
+from pyreml import MixedModel, Random, Residual      # B.2 pyreml (PyTorch backend)
+from sklearn.linear_model import Ridge               # B.5 scikit-learn
+from lmmtools.data import load_maize
+from lmmtools.design import incidence
+from lmmtools.reml import SparseREML                 # B.3 CUSTOM
+from lmmtools.report import check
+import warnings; warnings.filterwarnings("ignore")
+maize = load_maize(balanced=True)
+SAS = np.array([220.66, 13.4463, 303.15, 24.9323, 64.8862])      # location, rep(location), RIL, location*RIL, residual
+
+%%md
+## B.1 statsmodels MixedLM (small–moderate data)
+
+Crossed random effects are variance components inside a single group that contains every observation. When all random terms are nested in one factor, use that factor as `groups` instead — it is much faster (shown for a RIL-only model).
+
+%%code
+t = time.perf_counter()
+d = maize.assign(one=1)
+vc = {"location": "0 + C(location)", "rep": "0 + C(location):C(rep)", "RIL": "0 + C(RIL)", "GxL": "0 + C(RIL):C(location)"}
+sm_fit = smf.mixedlm("height ~ 1", d, groups="one", vc_formula=vc).fit(reml=True, method=["bfgs"], gtol=1e-10, maxiter=5000)
+sm_est = np.r_[[dict(zip(sm_fit.model.exog_vc.names, sm_fit.vcomp))[k] for k in vc], sm_fit.scale]
+print(f"statsmodels ({time.perf_counter() - t:.1f}s):", sm_est.round(4))
+check("statsmodels vs SAS (max rel. diff)", np.max(np.abs(sm_est / SAS - 1)), 0, 2e-4)
+# nested special case: one random factor as the grouping variable
+ril_only = smf.mixedlm("height ~ 1", maize, groups="RIL").fit(reml=True)
+print("RIL-only model: sigma2_RIL =", round(float(ril_only.cov_re.iloc[0, 0]), 2), " residual =", round(ril_only.scale, 2))
+
+%%md
+## B.2 pyreml (structured covariances, relationship matrices, GPU)
+
+Each random effect is a `Random(unit=...)` term; its covariance is $\Sigma \otimes K$, with `left_hand` (across components or traits) and `right_hand` (across levels: `iid`, a known `covariance` such as a pedigree matrix, `ar_iso`, `eucl`, …). Set `device="cuda"` on a GPU machine. The RIL table gives BLUPs, their SEs and reliabilities (`CD`).
+
+%%code
+t = time.perf_counter()
+dp = maize.assign(loc_rep=maize.location + ":" + maize.rep, loc_ril=maize.location + ":" + maize.RIL)
+pr = MixedModel.from_dataframe(data=dp, response="height", fixed="1",
+                               random=[Random(unit="location"), Random(unit="loc_rep"), Random(unit="RIL"), Random(unit="loc_ril")],
+                               residual=Residual(), device="cpu")
+pr.fit(dtype="double", verbose=False)
+pr_est = np.array([r.variance["sigma"] for r in pr.random] + [pr.residual.variance["sigma"]])
+print(f"pyreml ({time.perf_counter() - t:.1f}s):", pr_est.round(4), "| -2RLL", round(pr.neg2loglik, 2), "| AIC", round(pr.AIC, 2))
+print(pr.estimates)
+print(pr.random[2].table.head(4))
+check("pyreml vs SAS (max rel. diff)", np.max(np.abs(pr_est / SAS - 1)), 0, 2e-4)
+check("pyreml intercept SE (SAS 7.8719)", float(pr.estimates["SE"].iloc[0]), 7.8719, 5e-4)
+
+%%md
+A pedigree-based animal model with pyreml would look like this (sketch; the chapter's maize data have no pedigree):
+
+```python
+from pyreml import MixedModel, Random, A_pedigree, prepare_pedigree
+ped = prepare_pedigree(df[["ID", "SIRE", "DAM"]])
+model = MixedModel.from_dataframe(data=df, response="y", fixed="1 + C(herd)",
+            random=Random(unit="ID", right_hand="str", covariance=A_pedigree(ped), matrix_index=ped["id"].tolist()))
+model.fit()
+```
+
+## B.3 lmmtools.SparseREML (custom; large data, SAS-style inference)
+
+%%code
+t = time.perf_counter()
+Zs = [incidence(maize, f)[0] for f in ["location", ["location", "rep"], "RIL", ["location", "RIL"]]]
+m = SparseREML(maize.height, np.ones((len(maize), 1)), Zs, ["location", "rep(location)", "RIL", "location*RIL"])
+cu = m.fit(se="ai")                                   # "ai": average information SEs (ASReml); "observed": SAS COVTEST
+print(f"lmmtools ({time.perf_counter() - t:.1f}s)"); print(cu.table().round(4))
+check("lmmtools vs SAS (max rel. diff)", np.max(np.abs(cu.theta / SAS - 1)), 0, 2e-4)
+
+%%md
+## B.4 pymer4 (lme4 through R) and Bambi (Bayesian) — code not executed here
+
+These need software outside `requirements.txt` (R with lme4/lmerTest for pymer4; Bambi/PyMC), so the code is shown but was **not run** for this companion.
+
+```python
+# pymer4 >= 0.9  (requires R with lme4, lmerTest, broom.mixed; data as a polars DataFrame)
+import polars as pl
+from pymer4.models import lmer
+model = lmer("height ~ 1 + (1|RIL) + (1|location) + (1|location:rep) + (1|location:RIL)", data=pl.from_pandas(maize))
+model.fit()                     # REML; fixed-effect tests with Satterthwaite df (lmerTest)
+print(model.ranef_var)          # variance components, as lme4
+model.anova()                   # F-tests for fixed effects
+# pymer4 < 0.9 used:  from pymer4.models import Lmer; Lmer(formula, data=pandas_df).fit(REML=True)
+```
+
+```python
+# Bambi on PyMC  (pip install bambi)
+import bambi as bmb
+model = bmb.Model("height ~ 1 + (1|RIL) + (1|location) + (1|location:rep) + (1|location:RIL)", maize)
+idata = model.fit(draws=2000, chains=4)    # posterior for each SD; square for variances
+```
+
+## B.5 scikit-learn: BLUP as ridge regression
+
+For $y = \mu + Zu + e$ with one random factor and a known (or REML-estimated) ratio $\alpha = \sigma^2_e/\sigma^2_u$, the BLUPs solve $(Z'Z + \alpha I)u = Z'(y - \hat\mu)$ with $\mu$ unpenalised — exactly ridge regression with an unpenalised intercept. scikit-learn's sparse solvers then scale to very large problems, but variance components must come from elsewhere.
+
+%%code
+ril = SparseREML(maize.height, np.ones((len(maize), 1)), [incidence(maize, "RIL")[0]], ["RIL"]).fit(se=None)
+alpha = ril.sigma2_e / ril.sigma2[0]
+Z, levels = incidence(maize, "RIL")
+ridge = Ridge(alpha=alpha, fit_intercept=True, solver="sparse_cg", tol=1e-12).fit(Z, maize.height)
+print(f"alpha = {alpha:.4f};  intercept: ridge {ridge.intercept_:.4f} vs REML {ril.beta[0]:.4f}")
+check("ridge coefficients = BLUPs (max abs diff)", np.abs(ridge.coef_ - ril.blups["RIL"]).max(), 0, 1e-6)

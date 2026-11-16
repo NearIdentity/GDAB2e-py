@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lmmtools"
+version = "0.1.0"
+description = "Custom helpers for the Python companion to 'Chapter 1: A Review of Linear Mixed Models' (sparse REML, mixed model equations, random-model ANOVA tests)."
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "scipy>=1.11", "pandas>=2.1", "patsy>=0.5.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: comparisons against third-party engines (statsmodels, pyreml)"]

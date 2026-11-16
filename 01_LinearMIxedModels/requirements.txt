@@ -1,0 +1,29 @@
+# Python companion to "Chapter 1: A Review of Linear Mixed Models" (Isik, Holland & Maltecca, draft 2025)
+# Install with:  uv pip install -r requirements.txt      (Python 3.10-3.13; tested with 3.12)
+
+# Core numerical stack
+numpy>=1.26
+scipy>=1.11
+pandas>=2.1
+patsy>=0.5.6
+
+# Statistics
+statsmodels>=0.14          # OLS/ANOVA, MixedLM (REML/ML)
+scikit-learn>=1.4          # Ridge regression = BLUP with known variance ratio (Appendix B.5)
+
+# Alternative REML engine (Appendix B.2). Pulls in PyTorch.
+# Linux: to avoid the multi-GB CUDA build, install CPU-only torch first (see README).
+pyreml>=0.5.5
+
+# Notebooks and plots
+matplotlib>=3.8
+jupyterlab>=4.0
+ipykernel>=6.29
+nbclient>=0.10
+nbformat>=5.10
+
+# Tests
+pytest>=8.0
+
+# Custom code for this companion (src/lmmtools), installed in editable mode
+-e .

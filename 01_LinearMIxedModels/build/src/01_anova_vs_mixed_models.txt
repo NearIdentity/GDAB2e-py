@@ -1,0 +1,174 @@
+%%md
+# 1. Mixed Models Compared to Traditional ANOVA (balanced data)
+
+*Companion to Chapter 1, "A Review of Linear Mixed Models" (first draft, March 2025), pages 3–12. The narrative is a condensed restatement; read it alongside the chapter.*
+
+The chapter opens by comparing ordinary least-squares analysis of variance (ANOVA) with a mixed-model analysis of the same experiment. With balanced data and no negative variance estimates the two agree on the variance components, but hypothesis tests about random effects and predictions of genotype values need different machinery. This notebook redoes the ANOVA half of that comparison: the SAS PROC GLM, R `lm()` and ASReml fixed-model analyses.
+
+%%imports
+# Modules and imports for this section
+import numpy as np                                   # arrays, linear algebra
+import pandas as pd                                  # data frames
+import statsmodels.api as sm                         # anova_lm
+import statsmodels.formula.api as smf                # R-style formulas: ols()
+from lmmtools.data import load_maize                 # CUSTOM: verified data loader (Appendix A)
+from lmmtools.anova import FactorialANOVA            # CUSTOM: SAS-style ANOVA, EMS, random tests (Appendix C)
+from lmmtools.report import check                    # CUSTOM: compare with the chapter's printed values
+pd.set_option("display.width", 100)
+
+%%md
+## Maize recombinant inbred lines data
+
+Sixty-two recombinant inbred lines (RILs) from the maize cross B73 × Mo17 were grown in 20-plant plots in a randomized complete block design with two replications at each of four locations (ARC, CLY, PPAC, TPAC). Each plot records days to pollen shed and silking, the anthesis–silking interval (ASI), and plant height (mean of five plants). Height is the {{C1|response (dependent) variable}} analysed throughout. A few missing plots were filled with simulated values to make this file balanced; the real, unbalanced file is analysed in notebook 03.
+
+The data are not bundled with this companion: `python scripts/get_data.py` downloads verified copies (Appendix A explains the sources and the SHA-256 checks).
+
+%%orig R
+# read data
+maize <- read_csv(file='data/MaizeRILs.csv')
+maize <- maize %>% mutate(across(c(location, rep, block, plot, RIL), as.factor))
+head(maize)
+
+%%code
+maize = load_maize(balanced=True)          # factors (location, rep, block, plot, RIL) read as strings
+print(maize.shape)
+maize.head()
+
+%%code
+check("number of plots", len(maize), 62 * 4 * 2, 0)
+check("grand mean of height", maize.height.mean(), 182.1195, 5e-5)
+
+%%md
+The linear model (eq. 1.1) is
+
+$$y_{ijk} = \mu + L_i + B(L)_{ij} + G_k + GL_{ik} + \varepsilon_{ijk},$$
+
+with location $L_i$, block (replication) within location $B(L)_{ij}$, genotype (RIL) $G_k$, genotype × location interaction $GL_{ik}$ and plot residual $\varepsilon_{ijk}$. The chapter treats every effect except $\mu$ as random.
+
+## Balanced data: ANOVA with SAS PROC GLM
+
+Before any analysis, the expected mean squares (EMS) follow from the design (Steel, Torrie & Dickey 1997), with $n_l=4$ locations, $n_b=2$ blocks per location and $n_g=62$ RILs:
+
+| Source | df | Expected mean square |
+|---|---|---|
+| Location | $n_l-1$ | $\sigma^2_\varepsilon + n_b\sigma^2_{GL} + n_g\sigma^2_{B(L)} + n_bn_g\sigma^2_L$ |
+| Rep(Location) | $(n_b-1)n_l$ | $\sigma^2_\varepsilon + n_g\sigma^2_{B(L)}$ |
+| RIL | $n_g-1$ | $\sigma^2_\varepsilon + n_b\sigma^2_{GL} + n_bn_l\sigma^2_G$ |
+| RIL × Location | $(n_g-1)(n_l-1)$ | $\sigma^2_\varepsilon + n_b\sigma^2_{GL}$ |
+| Error | $(n_g-1)(n_b-1)n_l$ | $\sigma^2_\varepsilon$ |
+
+%%orig SAS
+proc glm data = ril.maizeril;
+class location rep RIL;
+model height = location rep(location) RIL RIL*location;
+random location rep(location) RIL RIL*location/test;
+lsmeans RIL;
+run;
+
+%%md
+**statsmodels** fits the fixed-effects model with `ols()` and gives the Type I table with `anova_lm`. Treatment (dummy) coding is rank-deficient here because rep is nested within location; statsmodels warns but the sums of squares are correct for balanced data.
+
+%%code
+import warnings; warnings.filterwarnings("ignore", category=UserWarning)
+ols_fit = smf.ols("height ~ C(location) + C(location):C(rep) + C(RIL) + C(RIL):C(location)", data=maize).fit()
+print(sm.stats.anova_lm(ols_fit, typ=1).round(4))
+print(f"R-Square {ols_fit.rsquared:.6f}   Root MSE {np.sqrt(ols_fit.mse_resid):.6f}   height Mean {maize.height.mean():.4f}")
+
+%%md
+The custom `FactorialANOVA` class (Appendix C.2) reproduces PROC GLM exactly — indicator coding, SAS's g2 generalized inverse, Type I and Type III sums of squares with rank-based degrees of freedom — and adds the random-effects machinery that statsmodels lacks.
+
+%%code
+terms = {"location": ("location",), "rep(location)": ("location", "rep"),
+         "RIL": ("RIL",), "location*RIL": ("location", "RIL")}
+glm = FactorialANOVA(maize, "height", terms)
+print("Type I\n", glm.type1().round(4))
+print("\nType III\n", glm.type3().round(4))
+
+%%code
+t1 = glm.type1()
+for term, ss in [("location", 84931.3312), ("rep(location)", 3594.2244), ("RIL", 154937.5322), ("location*RIL", 20999.4038), ("Error", 15832.2400)]:
+    check(f"Type I SS {term}", t1.loc[term, "SS"], ss, 5e-4)
+check("F location (fixed-model test)", t1.loc["location", "F"], 436.31, 5e-3)
+check("R-Square", ols_fit.rsquared, 0.943516, 5e-7)
+
+%%md
+These default F-tests divide every mean square by the residual mean square, which is right only if all effects are fixed. With random effects the denominator must have the same expectation as the numerator under $H_0$. For RIL that is $MS(\text{RIL})/MS(\text{location×RIL}) = 2539.959/114.7508 = 22.13$ on 61 and 183 df. SAS's `random ... / test` builds such tests automatically, synthesising a denominator (with Satterthwaite df) when no single mean square fits, as for location. `random_tests()` does the same:
+
+%%code
+print(glm.ems_type3().round(4))                    # coefficients of each variance component in E[MS]
+rt = glm.random_tests()
+rt.round(4)
+
+%%code
+check("location: synthesised error df", rt.loc["location", "Error DF"], 4.4543, 5e-5)
+check("location: synthesised error MS", rt.loc["location", "Error MS"], 948.420722, 5e-6)
+check("location: F", rt.loc["location", "F"], 29.85, 5e-3)
+check("location: Pr > F", rt.loc["location", "Pr > F"], 0.0022, 5e-5)
+check("RIL: F = MS(RIL)/MS(location*RIL)", rt.loc["RIL", "F"], 22.13, 5e-3)
+
+%%md
+### Variance components by the method of moments
+
+Equating each observed mean square to its expectation and solving gives the moment (ANOVA) estimates: $\hat\sigma^2_\varepsilon = MS(\text{error}) = 64.89$, $\hat\sigma^2_{GL} = (114.75-64.89)/2 = 24.93$ and $\hat\sigma^2_G = (2539.96-114.75)/8 = 303.15$.
+
+%%code
+mom = glm.moments()
+print(mom.round(3))
+check("sigma2 error", mom["Error"], 64.89, 5e-3)
+check("sigma2 location*RIL", mom["location*RIL"], 24.93, 5e-3)
+check("sigma2 RIL", mom["RIL"], 303.15, 5e-3)
+
+%%md
+### Least-squares means
+
+`lsmeans RIL` gives each line's marginal mean, averaged over locations, blocks and the line's interactions with locations. In R the chapter rebuilds these from `lm()` coefficients: with treatment coding the first level of each factor is set to zero, so
+
+$$\text{LSMean(RIL-1)} = \hat\mu + \overline{\hat L}_{\cdot} + \overline{\widehat{B(L)}}_{\cdot\cdot},$$
+
+averaging over *all* four locations and eight blocks (including the zeroed reference levels). The same arithmetic in Python uses the statsmodels coefficients, whose names follow patsy's conventions:
+
+%%orig R
+coefs <- m0_summary$coefficients
+(RIL1_mn <- coefs["(Intercept)",1] +
+           (sum(coefs[c("locationCLY", "locationPPAC", "locationTPAC"),1])/4) +
+           (sum(coefs[c("locationARC:rep2", "locationCLY:rep2", "locationPPAC:rep2", "locationTPAC:rep2"),1])/8))
+(RIL11_mn <- RIL1_mn + coefs["RILRIL-11",1] +
+            (sum(coefs[c("locationCLY:RILRIL-11", "locationPPAC:RILRIL-11", "locationTPAC:RILRIL-11"),1])/4))
+
+%%code
+# A full-rank parameterisation matching R's: location + location:rep (rep 2 only) + RIL + RIL:location
+m0 = smf.ols("height ~ C(location) + C(location):I(rep == '2') + C(RIL) + C(RIL):C(location)", data=maize).fit()
+c = m0.params
+locs = [f"C(location)[T.{l}]" for l in ["CLY", "PPAC", "TPAC"]]
+reps = [p for p in c.index if "I(rep == '2')[T.True]" in p]
+RIL1_mn = c["Intercept"] + c[locs].sum() / 4 + c[reps].sum() / 8
+gl11 = [p for p in c.index if p.startswith("C(RIL)[T.RIL-11]:C(location)")]
+RIL11_mn = RIL1_mn + c["C(RIL)[T.RIL-11]"] + c[gl11].sum() / 4
+print(f"RIL-1 {RIL1_mn:.3f}   RIL-11 {RIL11_mn:.3f}")
+check("LSMean RIL-1 (by hand)", RIL1_mn, 182.1, 5e-4)
+check("LSMean RIL-11 (by hand)", RIL11_mn, 182.875, 5e-4)
+
+%%md
+Doing this for every line is tedious; in R one calls `lsmeans()` (or `emmeans()`). Python has no LS-means function in statsmodels, so `FactorialANOVA.lsmeans()` (Appendix C.2) builds each LS-mean as an estimable linear function $L\hat{\boldsymbol\beta}$ and checks estimability ($L H = L$, with $H$ the Hermite form), as SAS does:
+
+%%code
+ls = glm.lsmeans("RIL")
+print(ls.head(4).round(4))
+check("LSMEAN RIL-12", ls.loc["RIL-12", "LSMEAN"], 185.2, 5e-4)
+check("LSMEAN RIL-14", ls.loc["RIL-14", "LSMEAN"], 194.25, 5e-4)
+check("LSMEAN SE (R lsmeans: 2.85, df 244)", ls.loc["RIL-1", "SE"], 2.85, 5e-3)
+
+%%md
+## Balanced data: ANOVA with ASReml
+
+Fitted with all terms fixed, ASReml's `wald.asreml(..., ssType = "incremental")` gives incremental (sequential) Wald F statistics — the Type I F tests above (RIL 39.14) — with the same caveat that they are wrong when effects are random. Its `predict(classify = "RIL")` returns the LS-means. The Python equivalents are the Type I table and `lsmeans()` above; the residual variance from the fixed model is the error mean square, 64.89 (ASReml: `units!R 64.89`).
+
+%%orig R
+part1 <- asreml(fixed = height ~ 1 + location + location:rep + RIL + RIL:location,
+                residual = ~id(units), data = maize)
+wald.asreml(part1, denDF="default", ssType="incremental")
+predict.asreml(part1, classify = "RIL")
+
+%%code
+check("ASReml units!R = MS(Error)", glm.mse, 64.89, 5e-3)
+check("ASReml incremental F for RIL", t1.loc["RIL", "F"], 39.14, 5e-3)

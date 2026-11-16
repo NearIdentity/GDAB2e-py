@@ -1,0 +1,245 @@
+%%md
+# 4. Mixed Models in a Nutshell: Theory, the Lactation Example, Estimability, Accuracy and REML
+
+*Companion to Chapter 1, pages 28–45.*
+
+A mixed linear model contains terms that stay constant over repeated sampling (fixed) and terms that vary at random according to a distribution (random). Every mixed model has three components: the model equation, the expectations and variance–covariance structure of the random effects, and the remaining assumptions.
+
+%%imports
+# Modules and imports for this section
+import numpy as np                                   # matrix algebra (the R code's %*%, solve, t, diag)
+import pandas as pd
+from scipy import stats
+import statsmodels.formula.api as smf                # ols for the all-fixed version of the example
+from lmmtools.mme import solve_mme                   # CUSTOM: mixed model equations, PEV, reliability (Appendix C.3)
+from lmmtools.data import load_maize
+from lmmtools.design import incidence
+from lmmtools.reml import SparseREML                 # CUSTOM: REML/ML (Appendix C.1)
+from lmmtools.report import check
+np.set_printoptions(precision=3, suppress=True)
+
+%%md
+## The model
+
+Each observation is one linear equation; stacking them gives a system $\mathbf A\mathbf x = \mathbf b$. For a mixed model the system is written (Henderson 1990)
+
+$$\mathbf y = \mathbf X\mathbf b + \mathbf Z\mathbf u + \mathbf e,$$
+
+with $\mathbf y$ the observations, $\mathbf b$ the fixed effects, $\mathbf u$ the random effects, $\mathbf e$ the residuals, and $\mathbf X$, $\mathbf Z$ incidence matrices linking each observation to its effects.
+
+## Fixed and random effects
+
+A fixed effect is a constant that would stay the same over conceptual repetitions of the experiment; a random effect is a random variable arising from sampling the levels of a factor. The chapter illustrates the difference by simulation. For the fixed-effect model $y_i = b_0 + e_i$, $e_i \sim \text{NIID}(0, \sigma^2)$ with $b_0 = 10$ and $\sigma^2 = 5$: draw $z_i \sim N(0,1)$, form {{C7|$e_i = \sqrt5\,z_i$ and $y_i = 10 + e_i$}}. All variability comes from $e$ and would be the same in a new experiment.
+
+%%code
+rng = np.random.default_rng(2025)
+n, b0, s2 = 10_000, 10.0, 5.0
+z = rng.standard_normal(n)
+e = np.sqrt(s2) * z                  # residuals with variance 5 (C7: scale by the SD, not the variance)
+y_fixed = b0 + e                      # C7: y = b0 + e, not 10 z
+print(f"mean {y_fixed.mean():.3f} (b0 = 10), variance {y_fixed.var(ddof=1):.3f} (sigma2 = 5)")
+check("simulated var(y), fixed b0", y_fixed.var(ddof=1), 5, 0.2)
+
+%%md
+If instead $b_0 \sim \text{NIID}(a, \sigma^2_b)$ with $a = 2$, $\sigma^2_b = 3$, and {{C7|$e \sim \text{NIID}(0, \sigma^2_e)$}} with $\sigma^2_e = 5$, each experiment first draws its own $\beta_0 = a + \sigma_b z$, then $y_i = \beta_0 + \sqrt5\,z_i$. Within one experiment the observations depend on that experiment's $\beta_0$; across experiments $\operatorname{Var}(y) = \sigma^2_b + \sigma^2_e$. Repeating the experiment $m$ times recovers $a$ and $\sigma^2_b$ as $m \to \infty$:
+
+%%code
+m, n_per = 20_000, 5
+beta0 = 2 + np.sqrt(3) * rng.standard_normal(m)                       # one draw per experiment
+y_rand = beta0[:, None] + np.sqrt(5) * rng.standard_normal((m, n_per))
+print(f"Var(y) across experiments {y_rand.var(ddof=1):.3f} (sigma2_b + sigma2_e = 8)")
+print(f"mean of experiment means {y_rand.mean():.3f} (a = 2)")
+check("Var(y) with random b0", y_rand.var(ddof=1), 8, 0.2)
+
+%%md
+In practice the choice depends on the inference wanted. Factors whose specific levels are of interest (fertilizer rates, a few elite cultivars) are fixed. Factors whose levels are a sample from a larger population (families, individuals, genotypes in heritability studies) are random, and inference is about the population variance. Environments are a grey area: years tend to be random samples, a few research farms may not be. A Bayesian treats every effect as random.
+
+## Expectations and variance–covariance of the random effects
+
+$E(\mathbf u) = \mathbf 0$, $E(\mathbf e) = \mathbf 0$, so $E(\mathbf y) = \mathbf X\mathbf b$ (eq. 1.8). With $\operatorname{Var}(\mathbf u) = \mathbf G$, $\operatorname{Var}(\mathbf e) = \mathbf R$ and $\operatorname{Cov}(\mathbf u, \mathbf e) = \mathbf 0$,
+
+$$\operatorname{Var}(\mathbf y) = \mathbf V = \mathbf Z\mathbf G\mathbf Z' + \mathbf R,\quad \operatorname{Cov}(\mathbf y, \mathbf u) = \mathbf Z\mathbf G,\quad \operatorname{Cov}(\mathbf y, \mathbf e) = \mathbf R,$$
+
+so $\mathbf y \sim N(\mathbf X\mathbf b, \mathbf V)$, $\mathbf u \sim N(\mathbf 0, \mathbf G)$, $\mathbf e \sim N(\mathbf 0, \mathbf R)$ (eqs. 1.10–1.15). In the simplest case $\mathbf G = \mathbf I\sigma^2_u$ and $\mathbf R = \mathbf I\sigma^2_e$; much of the book concerns richer $\mathbf G$ and $\mathbf R$ structures.
+
+## A trivial example: daughters' lactation yield
+
+Following Robinson (1991): lactation yields of nine daughters in three herds (fixed) by four sires (random, unrelated), with $\sigma^2_e = 1$ and $\sigma^2_u = 0.1$ treated as known.
+
+| Herd | Sire | Yield |
+|---|---|---|
+| 1 | ZA | 110 |
+| 1 | AD | 100 |
+| 2 | BB | 110 |
+| 2 | AD | 100 |
+| 2 | AD | 100 |
+| 3 | CC | 110 |
+| 3 | CC | 110 |
+| 3 | AD | 100 |
+| 3 | AD | 100 |
+
+The model is $\mathbf y = \mathbf X\mathbf b + \mathbf Z\mathbf u + \mathbf e$ with $\mathbf b = (h_1, h_2, h_3)'$, $\mathbf u = (s_{ZA}, s_{BB}, s_{CC}, s_{AD})'$ and residuals {{C9|$\mathbf e = (e_1, \dots, e_9)'$}}. The assumptions are $\mathbf G = \mathbf I\sigma^2_u$, $\mathbf R = \mathbf I\sigma^2_e$ and {{C8|$\mathbf V = \mathbf Z\mathbf G\mathbf Z' + \mathbf R$}} (eq. 1.18).
+
+The draft's R code defines `Y`, `Se` and `Su` but then uses `y`, `se` and `su`; R is case-sensitive, so {{C12|the names must be consistent}}. In NumPy, R's column-filled `matrix(..., nrow=9, byrow=F)` is `reshape(..., order="F")`:
+
+%%orig R
+Y <- c(110,100,110,100,100,110,110,100,100)                      # the y vector
+X <- matrix(c(1,1,0,0,0,0,0,0,0,
+           0,0,1,1,1,0,0,0,0,
+           0,0,0,0,0,1,1,1,1), nrow=9, byrow=F)                    # X matrix
+Z <- matrix(c(1,0,0,0,0,0,0,0,0,
+           0,0,1,0,0,0,0,0,0,
+           0,0,0,0,0,1,1,0,0,
+           0,1,0,1,1,0,0,1,1), nrow=9, byrow=F)                    # Z matrix
+Iu <- diag(4)
+Ie <- diag(9)
+Se <- 1
+Su <- 0.1
+G <- Iu*su
+R <- Ie*se
+V <- Z%*%(G)%*%t(Z)+(R)
+
+%%code
+y = np.array([110, 100, 110, 100, 100, 110, 110, 100, 100], float)          # the y vector
+X = np.array([1,1,0,0,0,0,0,0,0,
+              0,0,1,1,1,0,0,0,0,
+              0,0,0,0,0,1,1,1,1], float).reshape((9, 3), order="F")       # X matrix (herds)
+Z = np.array([1,0,0,0,0,0,0,0,0,
+              0,0,1,0,0,0,0,0,0,
+              0,0,0,0,0,1,1,0,0,
+              0,1,0,1,1,0,0,1,1], float).reshape((9, 4), order="F")       # Z matrix (sires ZA, BB, CC, AD)
+se, su = 1.0, 0.1                                                          # error and sire variances
+G = np.eye(4) * su
+R = np.eye(9) * se
+V = Z @ G @ Z.T + R                                                        # C8: Z G Z' + R
+print(V)
+
+%%md
+## Solving the model
+
+With the variances known, the BLUEs are the generalized least-squares estimates (eq. 1.22) and the BLUPs follow from eq. 1.23:
+
+$$\hat{\mathbf b} = (\mathbf X'\mathbf V^{-1}\mathbf X)^{-1}\mathbf X'\mathbf V^{-1}\mathbf y, \qquad \hat{\mathbf u} = \mathbf G\mathbf Z'\mathbf V^{-1}(\mathbf y - \mathbf X\hat{\mathbf b}).$$
+
+%%orig R
+Vinv <- solve(V)
+b <- solve(Xt%*%Vinv%*%X)%*%(Xt%*%Vinv%*%y)    #BLUE
+u <- G%*%Zt%*%Vinv%*%(y-X%*%b)                 #BLUP
+
+%%code
+Vinv = np.linalg.inv(V)                                        # inverse of the variance
+b = np.linalg.solve(X.T @ Vinv @ X, X.T @ Vinv @ y)            # BLUE
+u = G @ Z.T @ Vinv @ (y - X @ b)                               # BLUP
+print("b =", b.round(2), "  u =", u.round(2))
+for i, v in enumerate([105.64, 104.28, 105.46]): check(f"BLUE herd {i+1}", b[i], v, 5e-3)
+for nm, i, v in [("ZA", 0, 0.40), ("BB", 1, 0.52), ("CC", 2, 0.76), ("AD", 3, -1.67)]: check(f"BLUP sire {nm}", u[i], v, 5e-3)
+
+%%md
+Inverting $\mathbf V$ ($n \times n$) is impractical for large data sets, which leads to a more convenient form.
+
+## The mixed model equations
+
+Henderson's (1949) mixed model equations (MME, eq. 1.24) give both solutions without inverting $\mathbf V$:
+
+$$\begin{bmatrix}\mathbf X'\mathbf R^{-1}\mathbf X & \mathbf X'\mathbf R^{-1}\mathbf Z\\ \mathbf Z'\mathbf R^{-1}\mathbf X & \mathbf Z'\mathbf R^{-1}\mathbf Z + \mathbf G^{-1}\end{bmatrix}\begin{bmatrix}\hat{\mathbf b}\\ \hat{\mathbf u}\end{bmatrix} = \begin{bmatrix}\mathbf X'\mathbf R^{-1}\mathbf y\\ \mathbf Z'\mathbf R^{-1}\mathbf y\end{bmatrix}.$$
+
+With $\mathbf R = \mathbf I\sigma^2_e$ factored out and $\mathbf G = \mathbf I\sigma^2_u$, the lower-right block becomes {{C10|$\mathbf Z'\mathbf Z + \mathbf I\alpha$, with $\alpha = \sigma^2_e/\sigma^2_u$}} (eq. 1.25). Writing the left-hand side as $\mathbf C$, the solutions are {{C11|$[\hat{\mathbf b}; \hat{\mathbf u}] = \mathbf C^{-1}[\mathbf X'\mathbf y; \mathbf Z'\mathbf y]$, i.e. $\hat{\mathbf b} = \mathbf C^{11}\mathbf X'\mathbf y + \mathbf C^{12}\mathbf Z'\mathbf y$ and $\hat{\mathbf u} = \mathbf C^{21}\mathbf X'\mathbf y + \mathbf C^{22}\mathbf Z'\mathbf y$}}, where $\mathbf C^{ij}$ are blocks of $\mathbf C^{-1}$ (eqs. 1.26–1.27).
+
+%%orig R
+alpha <- se/su
+XpX <- crossprod(X); XpZ <- crossprod(X,Z); ZpX <- crossprod(Z,X); ZpZ <- crossprod(Z)
+Xpy <- crossprod(X,y); Zpy <- crossprod(Z,y)
+LHS <- rbind(cbind(XpX,XpZ), cbind(ZpX,ZpZ+diag(4)*alpha))
+RHS <- rbind(Xpy,Zpy)
+sol <- solve(LHS)%*%RHS
+
+%%code
+alpha = se / su
+LHS = np.block([[X.T @ X, X.T @ Z], [Z.T @ X, Z.T @ Z + np.eye(4) * alpha]])   # crossprod(A, B) = A.T @ B
+RHS = np.concatenate([X.T @ y, Z.T @ y])
+sol = np.linalg.solve(LHS, RHS)          # prefer solve() to inv() @ RHS
+print("LHS =\n", LHS.astype(int)); print("solutions:", sol.round(2))
+check("MME reproduces GLS/BLUP (max abs diff)", np.abs(sol - np.r_[b, u]).max(), 0, 1e-10)
+
+%%md
+The custom `solve_mme()` (Appendix C.3) wraps these steps and also returns prediction error variances and reliabilities:
+
+%%code
+mme = solve_mme(X, [Z], y, sigma2_u=su, sigma2_e=se)
+print("BLUE", mme.blue.round(2), " BLUP", mme.blup[0].round(2))
+
+%%md
+## Estimability in models with multiple fixed effects
+
+Treat sires as fixed as well. The 9 × 7 matrix $[\mathbf X\ \mathbf Z]$ then has dependent columns (any sire column equals the sum of the herd columns minus the other three sire columns), so $\mathbf X'\mathbf X$ is 7 × 7 with rank 6 and has no unique inverse: individual herd and sire effects are not estimable. Some linear functions are. R's `lm()` sets the first sire level (AD) to zero, so its coefficients estimate differences from sire AD:
+
+%%orig R
+fm<-lm( yield~ herd + sire -1,data=new_data)
+summary(fm)
+
+%%code
+lact = pd.DataFrame({"yield": y, "herd": ["one", "one", "two", "two", "two", "three", "three", "three", "three"],
+                     "sire": ["ZA", "AD", "BB", "AD", "AD", "CC", "CC", "AD", "AD"]})
+fm = smf.ols('Q("yield") ~ herd + sire - 1', data=lact).fit()   # Q(): "yield" is a Python keyword
+print(fm.params.round(4))
+W = np.column_stack([X, Z])
+print("rank of X'X with sires fixed:", np.linalg.matrix_rank(W.T @ W), "of", W.shape[1])
+for s in ["BB", "CC", "ZA"]: check(f"sire {s} - sire AD", fm.params[f"sire[T.{s}]"], 10, 1e-8)
+
+%%md
+Daughters of sires BB, CC and ZA yield 10 units more than daughters of AD. Treating sires as fixed is the same as dropping $\mathbf G^{-1}$ from the MME (reducing the last four diagonal elements of the LHS by $\alpha = 10$). BLUP instead shrinks sire solutions toward zero by an amount that depends on the information available: sire CC's daughters yield the same as ZA's and BB's, yet CC's prediction (0.76) is larger because it rests on more daughters.
+
+## Standard errors and accuracy of the estimates
+
+Accuracy is the correlation between true and predicted values; reliability is its square. Both relate to the prediction error variance, $PEV = V(\hat{\mathbf u} - \mathbf u) = (1 - r^2)\sigma^2_u$ (eq. 1.28), which comes from the inverse of the LHS: $PEV_i = d_i\sigma^2_e$, with $d_i$ the diagonal of $\mathbf C^{22}$ (eq. 1.32). The standard error of prediction is $SEP = \sqrt{PEV}$ and the reliability, by {{C13|re-arranging eq. 1.28}}, is $r^2 = 1 - PEV/\sigma^2_u$ (eq. 1.33).
+
+%%code
+Cinv = np.linalg.inv(LHS)
+print(np.round(Cinv, 3))
+summary = pd.DataFrame({"BLUP": mme.blup[0], "PEV": mme.pev[0], "SEP": mme.sep[0], "REL": mme.reliability[0]},
+                       index=["ZA", "BB", "CC", "AD"])
+print(summary.round(3))
+
+%%code
+for s, (bl, pev, sep, rel) in {"ZA": (0.40, 0.095, 0.308, 0.05), "BB": (0.52, 0.094, 0.306, 0.06),
+                               "CC": (0.76, 0.092, 0.303, 0.08), "AD": (-1.67, 0.083, 0.288, 0.17)}.items():
+    check(f"PEV {s}", summary.loc[s, "PEV"], pev, 5e-4)
+    check(f"SEP {s}", summary.loc[s, "SEP"], sep, 1.5e-3)     # the chapter takes sqrt of PEVs rounded to 3 dp
+    check(f"REL {s}", summary.loc[s, "REL"], rel, 5e-3)
+
+%%md
+The chapter's SEPs are square roots of PEVs already rounded to three decimals (√0.095 = 0.308); from unrounded PEVs they are 0.309, 0.307, 0.303 and 0.289. The draft's summary table labels the last sire {{C9|AD}} and its third column {{C9|SEP}}. The row (or column) sums of $\mathbf C^{22}$ equal $\sigma^2_u/\sigma^2_e = 0.1$ {{N3}}:
+
+%%code
+C22 = Cinv[3:, 3:]
+print("row sums of C22:", C22.sum(axis=1))
+check("row sum of C22 = sigma2_u / sigma2_e", C22.sum(axis=1).max(), 0.1, 1e-12)
+
+%%md
+A sire with no daughters (and no relatives) would have PEV = $\sigma^2_u$ = 0.1 and reliability 0.
+
+## A brief note on REML
+
+So far the variances were assumed known. In practice they are estimated, most often by **restricted maximum likelihood (REML)**, the default in SAS, R and ASReml. REML maximises the likelihood of linear combinations of the data that do not depend on the fixed effects, so it accounts for the degrees of freedom used to estimate them; ML treats the fixed-effect estimates as known and biases variances downward. REML (and ML) also keep variance estimates non-negative. With a relationship matrix, REML estimates refer to the base population and are less affected by selection (Chapter 11).
+
+REML must be found iteratively. Algorithms differ in the derivatives they use: derivative-free (MTDFREML), first derivatives (EM), or second derivatives (Newton–Raphson in PROC MIXED; Fisher scoring; average information in ASReml and PROC HPMIXED). lme4 uses penalized iteratively reweighted least squares. Python's options and when to use each are compared in Appendix B; the custom `SparseREML` is a derivative-free REML on the sparse MME, with Newton polishing.
+
+The ML/REML difference is largest for factors with few levels. For the maize data:
+
+%%code
+maize = load_maize(balanced=True)
+Zs = [incidence(maize, f)[0] for f in ["location", ["location", "rep"], "RIL", ["location", "RIL"]]]
+mod = SparseREML(maize.height, np.ones((len(maize), 1)), Zs, ["location", "rep(location)", "RIL", "location*RIL"])
+reml, ml = mod.fit(se=None), mod.fit(method="ml", se=None)
+print(pd.DataFrame({"REML": reml.theta, "ML": ml.theta}, index=reml.names + ["Residual"]).round(3))
+
+%%md
+ML's location variance (168.0) is about three-quarters of REML's (220.7): with four locations, ML ignores the one degree of freedom spent on the mean.
+
+REML iterations are not guaranteed to reach the global maximum, especially with small data sets and multi-trait models. Refitting from several starting values is a cheap check:
+
+%%code
+starts = [[0.1, 0.1, 0.1, 0.1], [10, 1, 10, 1], [1, 0.01, 1, 0.01], [3.4, 0.2, 4.7, 0.4]]
+for st in starts:
+    f = mod.fit(start=st, se=None)
+    print(f"start {st}: -2RLL {f.neg2_loglik:.4f}  sigma2 {np.round(f.theta, 2)}")

@@ -1,0 +1,167 @@
+%%md
+# 3. Unbalanced Data: ANOVA versus Mixed Models
+
+*Companion to Chapter 1, pages 23–28.*
+
+The real maize RIL data set has about 4.5% missing plots. RIL-5 has data from only two of the four locations and RIL-51 from three. With unbalanced data the ANOVA and mixed-model analyses part ways: the order of fitting matters, expected mean squares acquire awkward coefficients, standard F-tests become invalid, and some LS-means cannot be estimated at all. The mixed model handles all of this naturally.
+
+%%imports
+# Modules and imports for this section
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from lmmtools.data import load_maize                 # CUSTOM: data loader (Appendix A)
+from lmmtools.anova import FactorialANOVA            # CUSTOM: SAS-style Type I/III, EMS, random tests (Appendix C.2)
+from lmmtools.design import incidence                # CUSTOM: sparse incidence matrices
+from lmmtools.reml import SparseREML                 # CUSTOM: sparse REML with SAS-style SEs (Appendix C.1)
+from lmmtools.report import check
+import warnings; warnings.filterwarnings("ignore")
+pd.set_option("display.width", 100); pd.set_option("display.max_colwidth", 100)
+miss = load_maize(balanced=False)
+print(miss.shape, "| locations per RIL < 4:", miss.groupby("RIL").location.nunique().loc[lambda s: s < 4].to_dict())
+
+%%md
+## Unbalanced data: ANOVA with SAS PROC GLM
+
+%%orig SAS
+proc glm data = maize_miss;
+ class location rep RIL;
+ model mean_height = location rep(location) RIL RIL*location;
+ random location rep(location) RIL RIL*location/test;
+ lsmeans RIL;
+run;
+
+%%md
+statsmodels' `anova_lm` reports 183 df for the interaction, because it counts columns rather than the rank of the design (three location × RIL cells are empty). The custom `FactorialANOVA` uses ranks, giving PROC GLM's 180 df, and builds Type III hypotheses as SAS does (Appendix C.2):
+
+%%code
+ols_fit = smf.ols("height ~ C(location) + C(location):C(rep) + C(RIL) + C(RIL):C(location)", data=miss).fit()
+print("statsmodels anova_lm (typ=1):\n", sm.stats.anova_lm(ols_fit, typ=1).round(4))
+terms = {"location": ("location",), "rep(location)": ("location", "rep"), "RIL": ("RIL",), "location*RIL": ("location", "RIL")}
+glm = FactorialANOVA(miss, "height", terms)
+t1, t3 = glm.type1(), glm.type3()
+print("\nType I\n", t1.round(4)); print("\nType III\n", t3.round(4))
+print(f"\nR-Square {1 - glm.sse / np.sum((miss.height - miss.height.mean())**2):.6f}   Root MSE {np.sqrt(glm.mse):.6f}")
+
+%%code
+for term, ss in [("location", 79345.6274), ("rep(location)", 3693.2364), ("RIL", 150287.3376), ("location*RIL", 18290.6367)]:
+    check(f"Type I SS {term}", t1.loc[term, "SS"], ss, 5e-4)
+for term, ss in [("location", 77171.8286), ("rep(location)", 3677.7950), ("RIL", 149644.4648), ("location*RIL", 18290.6367)]:
+    check(f"Type III SS {term}", t3.loc[term, "SS"], ss, 5e-4)
+check("location*RIL df", t3.loc["location*RIL", "DF"], 180, 0)
+check("sum of Type III SS", t3["SS"].iloc[:4].sum(), 248784.7251, 5e-4)
+check("Error MS", glm.mse, 67.3687, 5e-5)
+
+%%md
+Type I and Type III results now differ. Type I sums of squares are sequential (each term adjusted only for the terms before it); Type III sums of squares adjust each term for all the others. With balanced data the terms are orthogonal and the two coincide; with unbalanced data the factors become correlated and the order of fitting matters, so Type III statistics are preferred. The Type III sums of squares no longer add up to the model total (248 784.73 < 266 774.80).
+
+### Expected mean squares and corrected F-tests
+
+The EMS coefficients now depend on the pattern of missing data. PROC GLM computes them; `ems_type3()` does the same by Hartley's method, $\text{coef}(\sigma^2_k) = \operatorname{tr}(Z_k' Q Z_k)/df$ for a sum of squares $y'Qy$:
+
+%%code
+ems = glm.ems_type3()
+print(ems.round(4))
+
+%%code
+check("EMS(location): location*RIL", ems.loc["location", "location*RIL"], 1.8769, 5e-5)
+check("EMS(location): rep(location)", ems.loc["location", "rep(location)"], 57.243, 5e-4)
+check("EMS(location): location", ems.loc["location", "location"], 114.49, 5e-3)
+check("EMS(rep(location))", ems.loc["rep(location)", "rep(location)"], 57.25, 5e-3)
+check("EMS(RIL): location*RIL", ems.loc["RIL", "location*RIL"], 1.9149, 5e-5)
+check("EMS(RIL): RIL", ems.loc["RIL", "RIL"], 7.6105, 5e-5)
+check("EMS(location*RIL)", ems.loc["location*RIL", "location*RIL"], 1.9348, 5e-5)
+
+%%md
+Under $H_0: \sigma^2_G = 0$ the ratio $MS(\text{RIL})/MS(\text{location×RIL})$ has expectation $(\sigma^2_\varepsilon + 1.9149\sigma^2_{GL})/(\sigma^2_\varepsilon + 1.9348\sigma^2_{GL}) \neq 1$, so the simple test is no longer correct. PROC GLM synthesises a denominator with the right expectation and uses Satterthwaite's degrees of freedom:
+
+%%code
+rt = glm.random_tests()
+rt.round(4)
+
+%%code
+check("location: error df", rt.loc["location", "Error DF"], 4.2929, 5e-5)
+check("location: error MS", rt.loc["location", "Error MS"], 952.566239, 5e-5)
+check("location: F", rt.loc["location", "F"], 27.00, 5e-3)
+check("location: Pr > F", rt.loc["location", "Pr > F"], 0.0031, 5e-5)
+check("RIL: error df", rt.loc["RIL", "Error DF"], 182.48, 5e-3)
+check("RIL: error MS", rt.loc["RIL", "Error MS"], 101.262345, 5e-5)
+check("RIL: F", rt.loc["RIL", "F"], 24.23, 5e-3)
+
+%%md
+### Variance components by the method of moments
+
+The moment estimates must use the unbalanced Type III mean squares and coefficients: $\hat\sigma^2_\varepsilon = 67.37$, $\hat\sigma^2_{GL} = (101.61 - 67.37)/1.9348 = 17.70$, and {{C6|$\hat\sigma^2_G = (2453.19 - 1.9149 \times 17.70 - 67.37)/7.6105 = 309.04$}}. These estimators' statistical properties (and hence their standard errors) are unknown.
+
+%%code
+mom = glm.moments()
+print(mom.round(3))
+check("sigma2 error (moments)", mom["Error"], 67.37, 5e-3)
+check("sigma2 location*RIL (moments)", mom["location*RIL"], 17.70, 5e-3)
+check("sigma2 RIL (moments, corrected C6)", mom["RIL"], 309.04, 5e-3)
+draft = (2539.96 - 1.9149 * 17.7 - 67.37) / 8
+print(f"The draft's arithmetic (balanced MS(RIL) = 2539.96, divisor 8) gives {draft:.2f}")
+
+%%md
+### LS-means that cannot be estimated
+
+PROC GLM prints "Non-est" for RIL-5 and RIL-51. An LS-mean averages the line's interaction effects with *all* locations, $\text{LSMean}(Y_{\cdot\cdot k}) = \mu + \bar L_\cdot + \overline{B(L)}_{\cdot\cdot} + G_k + \overline{GL}_{\cdot k}$ (eq. 1.7), and with no data for a genotype × location cell that interaction effect is not estimable in the fixed model — so neither is the LS-mean.
+
+%%code
+ls = glm.lsmeans("RIL")
+show = ["RIL-1", "RIL-11", "RIL-12", "RIL-49", "RIL-5", "RIL-50", "RIL-51", "RIL-53"]
+print(ls.loc[show, ["LSMEAN", "estimable"]].round(4).fillna("Non-est"))
+check("RIL-5 non-estimable", float(ls.loc["RIL-5", "estimable"]), 0, 0)
+check("RIL-51 non-estimable", float(ls.loc["RIL-51", "estimable"]), 0, 0)
+check("LSMEAN RIL-49", ls.loc["RIL-49", "LSMEAN"], 176.975, 5e-4)
+check("LSMEAN RIL-53", ls.loc["RIL-53", "LSMEAN"], 174.425, 5e-4)
+
+%%md
+## Unbalanced data: mixed-model analysis
+
+%%orig SAS
+proc mixed data = ril.maizeril_miss covtest;
+class location rep RIL;
+model height =/solution;
+random location rep(location) RIL RIL*location/solution;
+
+%%code
+d = miss.assign(one=1)
+vc = {"location": "0 + C(location)", "rep(location)": "0 + C(location):C(rep)",
+      "RIL": "0 + C(RIL)", "location*RIL": "0 + C(RIL):C(location)"}
+mm = smf.mixedlm("height ~ 1", d, groups="one", vc_formula=vc).fit(reml=True, method=["bfgs"], gtol=1e-10, maxiter=5000)
+Zs = [incidence(miss, f)[0] for f in ["location", ["location", "rep"], "RIL", ["location", "RIL"]]]
+model = SparseREML(miss.height, np.ones((len(miss), 1)), Zs, list(vc))
+fit = model.fit()
+tab = fit.table()
+tab["statsmodels"] = list(mm.vcomp[[list(mm.model.exog_vc.names).index(k) for k in vc]]) + [mm.scale]
+print(tab.round(4))
+
+%%code
+sas = {"location": (217.69, 184.69), "rep(location)": (15.0591, 11.4593), "RIL": (309.19, 58.5756),
+       "location*RIL": (17.1466, 6.4757), "Residual": (67.9184, 6.4110)}
+for k, (est, se) in sas.items():
+    check(f"sigma2 {k}", tab.loc[k, "Estimate"], est, 2e-4 * est)
+    check(f"SE {k}", tab.loc[k, "Std Error"], se, 5e-4 * se)
+    check(f"statsmodels sigma2 {k}", tab.loc[k, "statsmodels"], est, 5e-4 * est)
+
+%%md
+The REML estimates are close to, but not the same as, the moment estimates, and they come with asymptotic standard errors and the properties of likelihood estimators under normality.
+
+The BLUPs exist for every line, including RIL-5 and RIL-51: an unobserved genotype × location effect has expectation zero, so the line's value can still be predicted. Shrinkage now varies by line — lines with less data are pulled further toward the mean.
+
+%%code
+u = pd.Series(fit.blups["RIL"], index=sorted(miss.RIL.unique()))
+tbl = pd.DataFrame({"Random effect predictor": u, "mu": fit.beta[0]})
+tbl["BLUP"] = tbl["mu"] + tbl["Random effect predictor"]
+tbl["LSMEAN"] = ls["LSMEAN"]
+tbl["n plots"] = miss.groupby("RIL").size()
+pev = pd.Series(model.blup_pev(fit, "RIL"), index=u.index)
+tbl["SE pred"] = np.sqrt(pev)
+print(tbl.loc[show].round(2).fillna("Non-est"))
+
+%%code
+for k, v in {"RIL-1": 182.08, "RIL-5": 152.96, "RIL-50": 199.54, "RIL-51": 182.22, "RIL-53": 174.71}.items():
+    check(f"BLUP {k}", tbl.loc[k, "BLUP"], v, 6e-3)
+check("mu", fit.beta[0], 181.70, 5e-3)

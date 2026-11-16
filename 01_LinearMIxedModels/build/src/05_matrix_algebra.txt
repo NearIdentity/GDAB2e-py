@@ -1,0 +1,173 @@
+%%md
+# 5. Appendix of the Chapter: A Brief Introduction to Matrices, with NumPy
+
+*Companion to Chapter 1, pages 45–59.*
+
+Matrix notation is the most compact way to write mixed models and their solutions. This notebook translates the appendix's R examples to NumPy/SciPy and applies the corrections listed in the margin.
+
+| R | NumPy / SciPy |
+|---|---|
+| `c(1, 0, 4)` | `np.array([1, 0, 4])` |
+| `matrix(v, nrow = r)` (fills by column) | `np.reshape(v, (r, -1), order="F")` |
+| `diag(n)` / `diag(X)` | `np.eye(n)` / `np.diag(X)` |
+| `t(X)` | `X.T` |
+| `solve(X)` / `solve(A, b)` | `np.linalg.inv(X)` / `np.linalg.solve(A, b)` |
+| `A %*% B` | `A @ B` |
+| `rbind(A, B)` / `cbind(A, B)` | `np.vstack([A, B])` / `np.hstack([A, B])` |
+| `kronecker(A, B)` | `np.kron(A, B)` |
+| `eigen(A)`, `det(A)`, `Matrix::rankMatrix(A)`, `psych::tr(A)` | `np.linalg.eigh(A)`, `np.linalg.det(A)`, `np.linalg.matrix_rank(A)`, `np.trace(A)` |
+| direct sum (block diagonal) | `scipy.linalg.block_diag(D, F)` |
+| generalized inverse `MASS::ginv(A)` | `np.linalg.pinv(A)` |
+
+%%imports
+# Modules and imports for this section
+import numpy as np
+from scipy.linalg import block_diag                  # direct sum of matrices
+from lmmtools.report import check
+np.set_printoptions(precision=3, suppress=True)
+
+%%md
+## Systems of equations
+
+The system $6x - 3y + 2z = 7$, $x + 2y + 5z = 0$, $2x - 8y - z = -2$ is written {{C14|$\mathbf A\mathbf u = \mathbf v$ with unknowns $\mathbf u = (x, y, z)'$, and solved as $\mathbf u = \mathbf A^{-1}\mathbf v$}}. In code, `np.linalg.solve` is preferred over forming the inverse.
+
+%%code
+A = np.array([[6, -3, 2], [1, 2, 5], [2, -8, -1]], float)
+v = np.array([7, 0, -2], float)
+u = np.linalg.solve(A, v)
+print("u =", u, "  check A u =", A @ u)
+check("residual of A u = v", np.abs(A @ u - v).max(), 0, 1e-12)
+
+%%md
+## Matrix forms
+
+A matrix is a rectangular array indexed by row and column; its dimension is $r \times c$. A matrix with one dimension equal to one is a vector (column $r \times 1$ or row $1 \times c$). Common forms: square ($r = c$), symmetric ($S_{ij} = S_{ji}$), diagonal, identity ($\mathbf I$), {{C16|the matrix of ones $\mathbf J$}}, and the null matrix.
+
+%%code
+S = np.array([[1, 8, 3], [8, 9, 5], [3, 5, 0]]); D = np.diag([1, 9, 8]); I = np.eye(3)
+J = np.ones((3, 2)); N = np.zeros((3, 2))
+print("S symmetric:", np.array_equal(S, S.T), "| D diagonal:", np.count_nonzero(D - np.diag(np.diag(D))) == 0)
+print("J (ones) =\n", J)
+
+%%md
+## Matrix algebra
+
+Addition and subtraction are element-wise; a scalar multiplies every element. For a product $\mathbf A_{r_1\times c_1}\mathbf B_{r_2\times c_2}$ the inner dimensions must agree ($c_1 = r_2$), and in general $\mathbf A\mathbf B \neq \mathbf B\mathbf A$. The trace is the sum of the diagonal elements. For transposition, {{C15|$(\mathbf A\mathbf B)' = \mathbf B'\mathbf A'$ and $(\mathbf A\mathbf B\mathbf C)' = \mathbf C'\mathbf B'\mathbf A'$ for any conformable matrices}} — the order reverses.
+
+%%code
+rng = np.random.default_rng(1)
+A2, B2 = rng.normal(size=(2, 3)), rng.normal(size=(3, 4))
+check("(AB)' = B'A'", np.abs((A2 @ B2).T - B2.T @ A2.T).max(), 0, 1e-12)
+print("A'B' is not even defined here: shapes", A2.T.shape, B2.T.shape)
+T = np.array([[3, -1, 6], [2, 0, 3], [5, 8, -1]])
+check("trace example", np.trace(T), 2, 0)
+
+%%md
+The inner product $\mathbf a'\mathbf b$ is a scalar; the outer product $\mathbf a\mathbf b'$ is an $n \times n$ matrix:
+
+%%orig R
+a <- c(1,0,4); b <- c(2,1,5)
+atb <- t(a)%*%b
+abt <- a%*%t(b)
+
+%%code
+a, b = np.array([1, 0, 4]), np.array([2, 1, 5])
+print("inner a'b =", a @ b); print("outer ab' =\n", np.outer(a, b))
+check("inner product", a @ b, 22, 0)
+
+%%md
+## Rank, inverse, singularity
+
+The rank is the number of linearly independent rows (or columns), {{C22|from 0 to min(r, c)}}; a square matrix of full rank is invertible. For a 2 × 2 matrix the inverse is explicit: {{C17|$\begin{bmatrix}4&7\\2&6\end{bmatrix}^{-1} = \frac{1}{4\cdot6 - 7\cdot2}\begin{bmatrix}6&-7\\-2&4\end{bmatrix} = \begin{bmatrix}0.6&-0.7\\-0.2&0.4\end{bmatrix}$}}.
+
+%%code
+A22 = np.array([[4, 7], [2, 6]], float)
+print(np.linalg.inv(A22))
+check("inverse [0,1] element", np.linalg.inv(A22)[0, 1], -0.7, 1e-12)
+A3 = np.array([[1, 1, 1], [1, 2, 3], [1, 3, 4]], float)
+A3inv = np.array([[1, 1, -1], [1, -3, 2], [-1, 2, -1]], float)
+check("A A^-1 = I (3 x 3 example)", np.abs(A3 @ A3inv - np.eye(3)).max(), 0, 0)
+
+%%md
+A matrix that cannot be inverted is *singular*: its rows or columns are linearly dependent and its determinant is zero. Confounded parameters cause this in model fitting — for example, estimating both year and site effects when each year used a different site. {{C18|A square matrix is invertible exactly when it is non-singular ($|\mathbf A| \neq 0$); positive definiteness is sufficient (and allows a Cholesky factorisation) but not necessary}}.
+
+%%code
+conf = np.column_stack([np.ones(4), [1, 1, 0, 0], [0, 0, 1, 1], [1, 1, 0, 0]])   # year column duplicates the site column
+XtX = conf.T @ conf
+print("rank", np.linalg.matrix_rank(XtX), "of", XtX.shape[0], "| det", round(np.linalg.det(XtX), 12))
+M = np.array([[1, 2], [3, 1]], float)
+print("non-singular but not positive definite: eigenvalues", np.linalg.eigvals(M), "inverse exists:", np.linalg.inv(M).round(2).tolist())
+
+%%md
+## Direct sum and Kronecker product
+
+The direct sum $\mathbf D \oplus \mathbf F$ places square matrices as independent diagonal blocks; the Kronecker product $\mathbf D \otimes \mathbf F$ multiplies each element of $\mathbf D$ by the whole of $\mathbf F$. Both build $\mathbf G$ and $\mathbf R$ structures in later chapters (for example, a greenhouse residual matrix that is a correlation matrix ⊗ an identity).
+
+%%code
+D2, F2 = np.array([[4, 3], [6, 8]]), np.array([[1, 2], [3, 5]])
+print("D (+) F =\n", block_diag(D2, F2)); print("D (x) F =\n", np.kron(D2, F2))
+check("Kronecker [1,0] element", np.kron(D2, F2)[1, 0], 12, 0)
+
+%%orig R
+I <- diag(2)
+G <- matrix(c(5.55, 0.44, 0.43, 0.44, 8.88, 0.42, 0.43, 0.42, 3.33), nrow=3, ncol=3, byrow=T)
+GI <- kronecker(G, I)
+IG <- kronecker(I, G)
+
+%%code
+I2 = np.eye(2)
+G3 = np.array([[5.55, 0.44, 0.43], [0.44, 8.88, 0.42], [0.43, 0.42, 3.33]])
+print("G (x) I =\n", np.kron(G3, I2)); print("I (x) G =\n", np.kron(I2, G3))
+
+%%md
+## Eigenvalues and eigenvectors
+
+A scalar $\lambda$ and non-zero vector $\mathbf x$ with $\mathbf A\mathbf x = \lambda\mathbf x$ are an eigenvalue and eigenvector, i.e. {{C19|$(\mathbf A - \lambda\mathbf I)\mathbf x = \mathbf 0$, which has non-trivial solutions only when $\det(\mathbf A - \lambda\mathbf I) = 0$}}. For $\mathbf A = \begin{bmatrix}3&2\\3&-2\end{bmatrix}$ the eigenvalues are 4 and −3, and {{C19|the eigenvector for $\lambda = 4$ is $\mathbf x = (2, 1)'$}}: $\mathbf A(2,1)' = (8,4)' = 4(2,1)'$, whereas $\mathbf A(1,2)' = (7,-1)'$.
+
+%%code
+Ae = np.array([[3, 2], [3, -2]], float)
+lam, vec = np.linalg.eig(Ae)
+print("eigenvalues", lam); print("A (2,1)' =", Ae @ [2, 1], "   A (1,2)' =", Ae @ [1, 2])
+check("A x = 4 x for x = (2,1)", np.abs(Ae @ [2, 1] - 4 * np.array([2, 1])).max(), 0, 0)
+
+%%md
+Useful properties: the trace is the sum of the eigenvalues and the determinant their product, so a matrix is invertible exactly when no eigenvalue is zero. {{C20|For symmetric matrices (such as $\mathbf X'\mathbf X$ or covariance matrices), the sum of squared elements equals $\sum\lambda_i^2$ and the rank equals the number of non-zero eigenvalues}}.
+
+%%orig R
+A <- matrix(c(13, -4, 2, -4, 11, -2, 2, -2, 8), 3, 3, byrow=TRUE)
+tr(A); sum(eigen(A)$values); det(A); prod(eigen(A)$values); rankMatrix(A)
+
+%%code
+As = np.array([[13, -4, 2], [-4, 11, -2], [2, -2, 8]], float)
+ev = np.linalg.eigvalsh(As)                          # eigh/eigvalsh for symmetric matrices
+print(f"trace {np.trace(As):.0f} = sum(eigenvalues) {ev.sum():.0f};  det {np.linalg.det(As):.0f} = prod(eigenvalues) {ev.prod():.0f};  rank {np.linalg.matrix_rank(As)}")
+check("trace", np.trace(As), 32, 1e-10); check("determinant", np.linalg.det(As), 952, 1e-8); check("rank", np.linalg.matrix_rank(As), 3, 0)
+Nil = np.array([[0, 1], [0, 0]], float)             # C20: fails for non-symmetric matrices
+print("nilpotent example: eigenvalues", np.linalg.eigvals(Nil), "but rank", np.linalg.matrix_rank(Nil))
+
+%%md
+## Generalized inverse
+
+When $\mathbf A$ is singular, solutions can still be found with a generalized inverse. {{C21|$\mathbf G$ is a generalized inverse of $\mathbf A$ if $\mathbf A\mathbf G\mathbf A = \mathbf A$. It always exists but is not unique; if $\mathbf A$ is non-singular the only one is $\mathbf A^{-1}$. The Moore–Penrose inverse (`np.linalg.pinv`) is the unique g-inverse that also satisfies $\mathbf G\mathbf A\mathbf G = \mathbf G$ and symmetry of $\mathbf A\mathbf G$ and $\mathbf G\mathbf A$}}. SAS uses a different g-inverse (obtained by sweeping), which is why its "solutions" for non-full-rank models differ from R's or NumPy's while estimable functions agree.
+
+%%code
+Gp = np.linalg.pinv(XtX)
+check("A G A = A for the Moore-Penrose inverse", np.abs(XtX @ Gp @ XtX - XtX).max(), 0, 1e-10)
+from lmmtools.anova import sweep_ginv               # CUSTOM: SAS-style g2 inverse (Appendix C.2)
+Gs = sweep_ginv(XtX)
+check("A G A = A for the sweep (SAS) g-inverse", np.abs(XtX @ Gs @ XtX - XtX).max(), 0, 1e-10)
+print("the two g-inverses differ:", not np.allclose(Gp, Gs))
+
+%%md
+## Matrix algebra with R → NumPy
+
+The chapter's random-matrix example uses `set.seed(1); round(matrix(rnorm(16), nrow = 4) * 5)`. NumPy's random generator differs from R's, so the matrix is typed in from the text:
+
+%%code
+A4 = np.array([[-3, 2, 3, -3], [1, -4, -2, -11], [-4, 2, 8, 6], [8, 4, 2, 0]], float)
+A4inv = np.linalg.inv(A4)
+print(A4inv.round(2)); print("A^-1 A =\n", (A4inv @ A4).round(10))
+print("diag", np.diag(A4), "trace", np.trace(A4))
+print("cbind(A, I):\n", np.hstack([A4, np.eye(4)])); print("rbind(A, I):\n", np.vstack([A4, np.eye(4)]))
+check("trace of A", np.trace(A4), 1, 0)
+check("A^-1[0,0]", A4inv[0, 0], -0.12, 5e-3)

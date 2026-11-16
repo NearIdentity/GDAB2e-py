@@ -1,0 +1,22 @@
+dataset,n,random effects,engine,status,seconds,max rel. diff vs custom
+MaizeRILs.csv (balanced),496,322,lmmtools.SparseREML (custom),ok,1.4052342069999213,0.0
+MaizeRILs.csv (balanced),496,322,statsmodels MixedLM,ok,2.29933894900023,1.3149017696889587e-06
+MaizeRILs.csv (balanced),496,322,pyreml,ok,2.7649603099998785,1.3859784118164242e-06
+MaizeRIL_miss.csv (unbalanced),474,322,lmmtools.SparseREML (custom),ok,2.1824150990000817,0.0
+MaizeRIL_miss.csv (unbalanced),474,322,statsmodels MixedLM,ok,2.296161025999936,1.189159306802523e-05
+MaizeRIL_miss.csv (unbalanced),474,322,pyreml,ok,2.8446247480001148,1.1747612049139988e-05
+simulated 62 lines x 4 locations,472,322,lmmtools.SparseREML (custom),ok,1.8774130729998433,0.0
+simulated 62 lines x 4 locations,472,322,statsmodels MixedLM,ok,2.099995760999718,1.189512951160765e-05
+simulated 62 lines x 4 locations,472,322,pyreml,ok,2.8913899089998267,1.1196292976078936e-05
+simulated 200 lines x 8 locations,3040,1824,lmmtools.SparseREML (custom),ok,4.482966808000128,0.0
+simulated 200 lines x 8 locations,3040,1824,statsmodels MixedLM,ok,189.54463401800012,7.562365859170583e-05
+simulated 200 lines x 8 locations,3040,1824,pyreml,ok,189.28052622600035,7.707458997585626e-05
+simulated 500 lines x 10 locations,9500,5530,lmmtools.SparseREML (custom),ok,27.278032667999923,0.0
+simulated 500 lines x 10 locations,9500,5530,statsmodels MixedLM,timeout,,
+simulated 500 lines x 10 locations,9500,5530,pyreml,ok,489.84048269999994,0.00015500200166096434
+simulated 1000 lines x 20 locations,38000,21060,lmmtools.SparseREML (custom),ok,326.50686089900046,0.0
+simulated 1000 lines x 20 locations,38000,21060,statsmodels MixedLM,skipped (slower size failed),,
+simulated 1000 lines x 20 locations,38000,21060,pyreml,crashed (memory?),,
+simulated 2000 lines x 25 locations,95000,52075,lmmtools.SparseREML (custom),timeout,,
+simulated 2000 lines x 25 locations,95000,52075,statsmodels MixedLM,skipped (slower size failed),,
+simulated 2000 lines x 25 locations,95000,52075,pyreml,skipped (slower size failed),,

@@ -1,0 +1,19 @@
+MaizeRILs.csv (balanced)                 n=    496  lmmtools.SparseREML (custom)   ok             1.41s  max rel diff vs custom 0.00e+00
+MaizeRILs.csv (balanced)                 n=    496  statsmodels MixedLM            ok             2.30s  max rel diff vs custom 1.31e-06
+MaizeRILs.csv (balanced)                 n=    496  pyreml                         ok             2.76s  max rel diff vs custom 1.39e-06
+MaizeRIL_miss.csv (unbalanced)           n=    474  lmmtools.SparseREML (custom)   ok             2.18s  max rel diff vs custom 0.00e+00
+MaizeRIL_miss.csv (unbalanced)           n=    474  statsmodels MixedLM            ok             2.30s  max rel diff vs custom 1.19e-05
+MaizeRIL_miss.csv (unbalanced)           n=    474  pyreml                         ok             2.84s  max rel diff vs custom 1.17e-05
+simulated 62 lines x 4 locations         n=    472  lmmtools.SparseREML (custom)   ok             1.88s  max rel diff vs custom 0.00e+00
+simulated 62 lines x 4 locations         n=    472  statsmodels MixedLM            ok             2.10s  max rel diff vs custom 1.19e-05
+simulated 62 lines x 4 locations         n=    472  pyreml                         ok             2.89s  max rel diff vs custom 1.12e-05
+simulated 200 lines x 8 locations        n=   3040  lmmtools.SparseREML (custom)   ok             4.48s  max rel diff vs custom 0.00e+00
+simulated 200 lines x 8 locations        n=   3040  statsmodels MixedLM            ok           189.54s  max rel diff vs custom 7.56e-05
+simulated 200 lines x 8 locations        n=   3040  pyreml                         ok           189.28s  max rel diff vs custom 7.71e-05
+simulated 500 lines x 10 locations       n=   9500  lmmtools.SparseREML (custom)   ok            27.28s  max rel diff vs custom 0.00e+00
+simulated 500 lines x 10 locations       n=   9500  statsmodels MixedLM            timeout         nans  max rel diff vs custom nan
+simulated 500 lines x 10 locations       n=   9500  pyreml                         ok           489.84s  max rel diff vs custom 1.55e-04
+simulated 1000 lines x 20 locations      n=  38000  lmmtools.SparseREML (custom)   ok           326.51s  max rel diff vs custom 0.00e+00
+simulated 1000 lines x 20 locations      n=  38000  pyreml                         crashed (memory?)      nans  max rel diff vs custom nan
+simulated 2000 lines x 25 locations      n=  95000  lmmtools.SparseREML (custom)   timeout         nans  max rel diff vs custom nan
+written /home/claude/lmm_companion/benchmarks/results.csv
