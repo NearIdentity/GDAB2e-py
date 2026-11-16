@@ -13,7 +13,7 @@ from corrections import CORRECTIONS, NOTES
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 NB = ROOT / "notebooks"
-OUT = ROOT / "LMM_Chapter1_Python_Companion.pdf"
+OUT = ROOT / "GDAB2e-py-01_LinearMixedModels_PythonCompanion.pdf"
 FMT = HtmlFormatter(nowrap=True)
 LEX = {"SAS": SASLexer(), "R": SLexer(), "ASReml": TextLexer()}
 

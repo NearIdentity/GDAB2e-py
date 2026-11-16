@@ -1,0 +1,15 @@
+# Book data belong to the authors: fetched by each chapter's scripts/get_data.py, never committed
+*/data/
+
+# Environments and caches
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Build and test by-products
+*/build/pv/
+*/build/companion.html
+*/benchmarks/.tmp/
+*/tests/results.xml

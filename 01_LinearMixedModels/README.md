@@ -10,7 +10,7 @@ number against the draft and documents the corrections it found.
 
 | Deliverable | Where |
 |---|---|
-| Companion PDF (narrative, imports per section, original and Python code, outputs, margin corrections, appendices) | `LMM_Chapter1_Python_Companion.pdf` |
+| Companion PDF (narrative, imports per section, original and Python code, outputs, margin corrections, appendices) | `GDAB2e-py-01_LinearMixedModels_PythonCompanion.pdf` |
 | Annotated, executed notebooks | `notebooks/` |
 | Custom package (sparse REML, SAS-style ANOVA/EMS, MME) | `src/lmmtools/` |
 | Unit tests based on the chapter's examples | `tests/` |
@@ -114,7 +114,7 @@ python benchmarks/bench_reml.py   # REML engines on growing data sets; can take 
 uv pip install -r requirements-build.txt
 python -m playwright install chromium
 python build/build_nb.py     # executes build/src/*.txt into notebooks/*.ipynb
-python build/build_pdf.py    # renders LMM_Chapter1_Python_Companion.pdf
+python build/build_pdf.py    # renders GDAB2e-py-01_LinearMixedModels_PythonCompanion.pdf
 ```
 On Linux, `playwright install --with-deps chromium` also installs the system libraries Chromium needs.
 
